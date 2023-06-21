@@ -68,25 +68,26 @@ How it works:
 -------------
 The Autoshutdown script checks the status of the network and the server. A set
 of check in the script are known as a "cycle". Between the cycles the script
-goes into sleep for x seconds. The checks run on the system have a different
-priority from 0 = highest to 6 = lowest:
+goes into sleep for x seconds. The checks run on the system have different
+priorities from 0 = highest to 6 = lowest:
 
 0. Stay up-range: UPHOURS (Server in the time range, where it should be online)
 1. Check for active IPs over network interfaces
 2. Ports (Network sockets) over network interfaces  
-   Ports (Docker host ports)  
-   Check for logged in user  
+   Ports (Docker/Podman host ports)  
+   Check for logged in users  
    Samba status check  
 3. UL/DL-Rate in kB/s over active network interfaces
 4. HDD IO rate check in kB/s  
-   Check if S.M.A.R.T tests are running  
+   Check if S.M.A.R.T. tests are running  
 5. Check for active processes
 6. Check for user plugins
 
 If a check with a higher priority gives back a positive result, then no check
-with a lower priority is executed. The script reduces the cycles by one and
-goes to sleep for x seconds until the next cycle. If all cycles are 0 (zero)
-the server is shutdown.
+with a lower priority is executed, the script reset the cycles and sleep for x
+seconds. If all check run with a negative result the script reduces the cycles
+by one and goes to sleep for x seconds until the next cycle. If all cycles are
+0 (zero) the server is shutdown.
 
 Let's have a look at a simple example:
 
@@ -125,7 +126,7 @@ negative, next check.
 __Prio 3:__ UL/DL-Rate  
 Maybe a DL is running with 238 kB/s over the last minute. The check is
 positive, no more checks needed.
-Autoshutdown goes to sleep for x seconds.
+Autoshutdown goes to sleep for 180 seconds.
 
 __Prio 4 and 6:__  
 Not needed, because a check with a higher priority is positive.
@@ -140,6 +141,7 @@ meaning, see [autoshutdown.default](https://github.com/OpenMediaVault-Plugin-Dev
 Exit code details:
 -------------------
 0 - Script completed successfully.  
+143 - Script error detected in supervision cycle.  
 142 - Shutdown mechanism failed to run correctly.  
 141 - Initialisation failed for a component.  
 140 - Invalid configuration value where no default is available.  

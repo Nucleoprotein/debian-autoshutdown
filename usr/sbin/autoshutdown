@@ -17,6 +17,8 @@ shopt -s extglob
 ######## STORAGE DEFINITIONS #########
 declare -a NICS=()        # Array for storing active _check_networkconfig
                           # network interface names.
+declare -A PORT_MAP=()    # Associative array for storing _check_net_status
+                          # custom port to service mappings.
 declare -A NIC_2_IPV4     # Associative array for storing _check_networkconfig
                           # network interface to IPv4 address mappings.
 declare -A NIC_2_IPV6     # Associative array for storing _check_networkconfig
@@ -34,7 +36,7 @@ readonly CONFIG="${1:-/etc/autoshutdown.conf}"
                           # Autoshutdown default configuration.
 readonly DEFAULT_CONFIG="${2:-/etc/autoshutdown.default}"
                           # Directory containing plugin checks.
-readonly PLUGIN_DIR="/etc/autoshutdown.d"
+readonly PLUGIN_DIR="/etc/autoshutdown.d}"
 
 ### REGULAR EXPRESSION DEFINITIONS ###
                           # Network interface name regular expression.
@@ -81,7 +83,9 @@ readonly R_RANGE_IPV6
 #   Name       : _log
 #   Parameters : $1 : Log message in format "PRIORITY: MESSAGE".
 #              : $2 : 'force' will force logging to Syslog and sent to stderr.
-#   Globals    : $FAKE       : Are we running in fake mode. ('true' or 'false')
+#   Globals    : $VERBOSE    : Is verbose mode enabled allowing DEBUG output.
+#                              ('true' or 'false')
+#              : $FAKE       : Are we running in fake mode. ('true' or 'false')
 #              : $SYSLOG     : Should logging to to Syslog. ('true' or 'false')
 #              : $LOG_STDOUT : Suppress logging to stdout. Set 'false' in a
 #                              systemd service. (default 'true')
@@ -90,11 +94,12 @@ readonly R_RANGE_IPV6
 _log() {
     local -r user="$(id -nu "$(< "/proc/self/loginuid")" 2>/dev/null || true)"
     local -r tag="$(basename "${0}")"
+    local -r priority="${1%%: *}"
 
-    [[ "${1}" =~ ^([A-Za-z]*):\ *(.*) ]] && {
-       local -r priority=${BASH_REMATCH[1]}
-       local message="${FUNCNAME[1]}(): ${BASH_REMATCH[2]}"; }
+    [[ "${priority}" == "DEBUG" && "${VERBOSE:-"true"}" != "true" ]] &&
+        return 0
 
+    local message="${FUNCNAME[1]}(): ${1#*: }"
     [ "${FAKE:-}" == "true" ] && message="FAKE-Mode: ${message}"
     local -r message="${user:-${USER}}: ${priority}: '${message}'"
 
@@ -151,18 +156,16 @@ _ping_range() {
         local -r v6_c="${srv_ipv6%:*}"
     fi
 
-    [ "${DEBUG}" == "true" ] && {
-        _log "DEBUG: INTERFACE: ${net_iface}"
-        _log "DEBUG: ADRESSES TO EXTRACT: ${ips_regex}"
-        _log "DEBUG: IPv4 CLASS: ${v4_c:-N/A}"
-        _log "DEBUG: IPv6 CLASS: ${v6_c:-N/A}"
-        _log "DEBUG: PINGLIST: ${PINGLIST:-N/A}"
-        _log "DEBUG: RANGE: ${RANGE:-N/A}"; }
+    _log "DEBUG: INTERFACE: ${net_iface}"
+    _log "DEBUG: ADRESSES TO EXTRACT: ${ips_regex}"
+    _log "DEBUG: IPv4 CLASS: ${v4_c:-N/A}"
+    _log "DEBUG: IPv6 CLASS: ${v6_c:-N/A}"
+    _log "DEBUG: PINGLIST: ${PINGLIST:-N/A}"
+    _log "DEBUG: RANGE: ${RANGE:-N/A}"
 
     local -r key="${PINGLIST:-"${net_iface}"}"
     [ -z "${PINGLIST_IFACE["${key}"]:-}" ] && {
-        [ "${DEBUG}" == "true" ] &&
-            _log "DEBUG: Generating new PINGLIST_IFACE[${key}]"
+        _log "DEBUG: Generating new PINGLIST_IFACE[${key}]"
 
         if [ -n "${PINGLIST}" ]; then
             mapfile -t ip_list < "${PINGLIST}"
@@ -220,11 +223,10 @@ _ping_range() {
         _log "INFO: No IP addresses specified for: ${net_iface} -> next check"
         return 0; }
 
-    [ "${DEBUG}" == "true" ] &&
-        local pinglist_subset; while read -r pinglist_subset; do
-            _log "DEBUG: pinglist_array${cont:-}: ${pinglist_subset}"
-            local cont=" continued"
-        done < <(xargs -n 2048 <<< "${pinglist_array[*]}")
+    local pinglist_subset; while read -r pinglist_subset; do
+        _log "DEBUG: pinglist_array${cont:-}: ${pinglist_subset}"
+        local cont=" continued"
+    done < <(xargs -n 2048 <<< "${pinglist_array[*]}")
 
     _log "INFO: Retrieve list of active IPs for: ${net_iface}"
     local -r fping_result="$(LC_ALL=C
@@ -259,7 +261,7 @@ _shutdown() {
     _log "INFO: Shutdown issued: ${SHUTDOWNCOMMAND}" force
 
     [ "${FAKE}" == "true" ] && {
-        _log "INFO: Shutdown command not executed in FAKE-Mode" force
+        _log "WARNING: Shutdown command not executed in FAKE-Mode" force
         _log "INFO: Autoshutdown will end here"
         exit 0; }
 
@@ -300,8 +302,7 @@ _check_processes() {
             l_proc=$((l_proc + lp_result))
         done
         num_load_proc=$((num_load_proc + lp))
-        [ "${DEBUG}" == "true" ] &&
-            _log "DEBUG: Load processes: ${process}: Found ${l_proc} active after ${LPREPEAT} cycles"
+        _log "DEBUG: Load processes: ${process}: Found ${l_proc} active after ${LPREPEAT} cycles"
     done
     [ "${num_load_proc}" -gt 0 ] &&
         _log "INFO: Found ${num_load_proc} active from: ${LOADPROCNAMES}"
@@ -322,16 +323,14 @@ _check_processes() {
             # If there is no process with top, try "pgrep", but not in.tftpd.
             [ "${tp_result}" -eq 0 ] && {
                 [ "${process}" == "in.tftpd" ] && {
-                    [ "${DEBUG}" == "true" ] &&
-                        _log "DEBUG: Temp processes: Skipping 'in.tftpd'"
+                    _log "DEBUG: Temp processes: Skipping 'in.tftpd'"
                     break; }
                 tp_result="$(LC_ALL=C pgrep -fc "${process}")"; }
             tp=$((tp | tp_result))
             t_proc=$((t_proc + tp_result))
         done
         num_temp_proc=$((num_temp_proc + tp))
-        [ "${DEBUG}" == "true" ] &&
-            _log "DEBUG: Temp processes: ${process}: Found ${t_proc} active after ${TPREPEAT} cycles"
+        _log "DEBUG: Temp processes: ${process}: Found ${t_proc} active after ${TPREPEAT} cycles"
     done
     [ "${num_temp_proc}" -gt 0 ] &&
         _log "INFO: Found ${num_temp_proc} active from: ${TEMPPROCNAMES}"
@@ -362,22 +361,20 @@ _check_plugin() {
     local foundvalue=0
     for plugin in "${PLUGIN_DIR}"/*; do
         [ ! -f "${plugin}" ] && {
-            [ "${DEBUG}" == "true" ] &&
-                _log "DEBUG: Ignoring: ${plugin} as it is not a plugin file"
+            _log "DEBUG: Ignoring: ${plugin} as it is not a plugin file"
             continue; }
 
         local name="${plugin##*/}"
-        [ "${DEBUG}" == "true" ] && {
-            _log "DEBUG: -----------------------------------------------------"
-            _log "DEBUG: ${name}: plugin: ${plugin}"; }
+        _log "DEBUG: -----------------------------------------------------"
+        _log "DEBUG: ${name}: plugin: ${plugin}"
 
         for var in "enabled:true" "folder:N/A" "file:N/A" "content:N/A"; do
             local value="${var%:*}"
             declare "${value}"="$(
-                awk -F= -v regex="${var%:*}=" \
-                    '$0 ~ regex {gsub(/["]/,"",$2);print $2}' "${plugin}")"
-             [ "${DEBUG}" == "true" ] &&
-                _log "DEBUG: ${name}: ${value}: ${!value:-"${var#*:}"}"
+                awk -F= -v regex="^${var%:*}=" \
+                    '$0 ~ regex {gsub(/^["'\'']|["'\'']$/,"",$2);print $2}' \
+                    "${plugin}")"
+            _log "DEBUG: ${name}: ${value}: ${!value:-"${var#*:}"}"
         done
 
         # shellcheck disable=SC2154
@@ -386,8 +383,9 @@ _check_plugin() {
             continue; }
 
         # shellcheck disable=SC2154
-        [ -z "$(find "${folder}" -regextype posix-egrep \
-                    -regex ".*${file}" 2>/dev/null)" ] && {
+        [ -z "$(find "${folder}" -maxdepth 1 -type f \
+                    -execdir basename {} ';' 2>/dev/null |
+                sed -En "/${file}/p")" ] && {
             _log "INFO: ${name}: File not found -> next check"
             continue; }
 
@@ -395,7 +393,7 @@ _check_plugin() {
         if [ -z "${content}" ]; then
             _log "INFO: ${name}: File found -> no shutdown"
             ((foundvalue+=1))
-        elif grep -q "${content}" "${folder}/${file}"; then
+        elif grep -qe "${content}" "${folder}/${file}"; then
             _log "INFO: ${name}: Content found (${content}) -> no shutdown"
             ((foundvalue+=1))
         else
@@ -403,9 +401,8 @@ _check_plugin() {
         fi
     done
 
-    [ "${DEBUG}" == "true" ] && {
-        _log "DEBUG: -----------------------------------------------------"
-        _log "DEBUG: All plugins processed: Active plugins: ${foundvalue}"; }
+    _log "DEBUG: -----------------------------------------------------"
+    _log "DEBUG: All plugins processed: Active plugins: ${foundvalue}"
 
     [ "${foundvalue}" -gt 0 ] && return 1
     return 0
@@ -432,11 +429,10 @@ _check_loadaverage() {
     # Convert to integer by removing decimal point, assumes two decimal places.
     local -r loadavg="$(sed 's/[.]//;s/^0*//g;s/^$/0/' <<< "${loadavg_dec}")"
 
-    [ "${DEBUG}" == "true" ] && {
-        _log "DEBUG: -----------------------------------------------------"
-        _log "DEBUG: Output from '/proc/loadavg': ${loadavg_line}"
-        _log "DEBUG: load average decimal: ${loadavg_dec}"
-        _log "DEBUG: load average: ${loadavg}"; }
+    _log "DEBUG: -----------------------------------------------------"
+    _log "DEBUG: Output from '/proc/loadavg': ${loadavg_line}"
+    _log "DEBUG: load average decimal: ${loadavg_dec}"
+    _log "DEBUG: load average: ${loadavg}"
 
     local msg="INFO: Load average (${loadavg_dec} -> ${loadavg}) is"
     [ "${loadavg}" -gt "${LOADAVERAGE}" ] && {
@@ -452,73 +448,74 @@ _check_loadaverage() {
 #
 #   Name       : _check_net_status
 #   Parameters : $1 : IP addresses found for all network interfaces.
-#   Globals    : $NSOCKETNUMBERS    : Socket number to check for activity.
-#              : $NSOCKETIGNORESELF : If set will ignore all network interfaces
-#                                     IPv4/IPv6 addresses.
+#   Globals    : $PORT_MAP            : Associative array for custom port to
+#                                       service mappings.
+#              : $NSOCKETPORTMAP      : User defined port to service mappings.
+#              : $NSOCKETNUMBERS      : Socket number to check for activity.
+#              : $NSOCKETIGNORESELF   : If set will ignore all network
+#                                       interfaces IPv4/IPv6 addresses.
+#              : NSOCKETSCLIENTSCHECK : If true check, if the client connected
+#                                       to the socket is online.
 #   Return     : 0         : If no active socket has been found, shutdown.
 #              : 1 or more : If an active socket has been found, no shutdown.
 #
 _check_net_status() {
-    local -r ips_regex="${1// /|}"
+    local -r ips_filter="${1// /] or src [}"
 
-    local -r regex_s="[[]?(::(ffff|FFFF):)?"
-    local -r regex_e="[]]?([%][^ /]+)?"
+    [ "${NSOCKETIGNORESELF}" == "true" ] &&
+        local -r ips_ignore="and not ( dst [${1// /] or dst [}] )"
 
     local active=0
+
+    [[ "${#PORT_MAP[@]}" -eq 0 && -n "${NSOCKETPORTMAP}" ]] && {
+        local map; while read -r map; do
+            PORT_MAP["${map%%:*}"]="${map#*:}"
+        done <<< "${NSOCKETPORTMAP//,/$'\n'}"; }
+
+    local -r reg_s="^[[]?(::(ffff|FFFF):)?"
+    local -r reg_e="[]]?([%][^ /]+)?:[0-9]+$"
 
     # For each socket see if it is stated active using ss command.
     for nsocket in ${NSOCKETNUMBERS//,/ }; do
         local lines; lines="$(LC_ALL=C
-            ss -n |
-            awk -v regex="^${regex_s}(${ips_regex})${regex_e}:${nsocket}$" \
-                -v ips_regex="^${regex_s}(${ips_regex})${regex_e}:[0-9]+$" \
-                -v ignore_self="${NSOCKETIGNORESELF}" \
-                "(ignore_self == \"false\") ? \
-                    \$2 ~ /^ESTAB$/ && \$5 ~ regex : \
-                    \$2 ~ /^ESTAB$/ && \$5 ~ regex && \$6 !~ ips_regex")"
+            ss state established --no-header \
+                "( sport ${nsocket} and ( src [${ips_filter}] ) \
+                    ${ips_ignore:-} )" )"
 
         local msg="DEBUG: Port ${nsocket}: Found "
         [ -z "${lines}" ] && {
-            [ "${DEBUG}" == "true" ] && _log "${msg}no active connections"
+            _log "${msg}no active connections"
             continue; }
 
-        [ "${DEBUG}" == "true" ] && {
-            _log "${msg}active connections:"
-            local line; while read -r line; do
-                _log "DEBUG: ${line//+([[:space:]])/ }"
-            done <<< "${lines}"; }
+        _log "${msg}active connections:"
+        local line; while read -r line; do
+            _log "DEBUG: ${line//+([[:space:]])/ }"
+        done <<< "${lines}"
 
-        local no_lines; no_lines="$(wc -l <<< "${lines}")"
-        ((active+="${no_lines}"))
-
+        local service; service="${PORT_MAP[${nsocket}]:-}"
+            [ -z "${service}" ] && service="$(
+            awk 'NR==1 && $4!~/:[0-9]*$/{gsub(/.*:/,"",$4);print toupper($4)}
+                 NR==1 && $4~/:[0-9]*$/{print "UNKNOWN"}' <<< "${lines}")"
         local conips; conips="$(
-            awk -v regex_start="^${regex_s}" \
-                -v regex_end="${regex_e}:[0-9]+$" \
-                '{sub(regex_start,"",$6); sub(regex_end,"",$6)}
-                  $6~/:/{print "z"$6} $6!~/:/{print $6}' <<< "${lines}" |
+            awk -v reg_s="${reg_s}" -v reg_e="${reg_e}" \
+                '{sub(reg_s,"",$5); sub(reg_e,"",$5)}
+                  $5~/:/{print "z"$5} $5!~/:/{print $5}' <<< "${lines}" |
             sort -Vu | awk -Fz '/:/{print $2}!/:/{print}')"
 
-        # Set portprotocol - Only default ports are defined here.
-        local portprotocol
-        case "${nsocket}" in
-            80|8080) portprotocol="HTTP" ;;
-            22)      portprotocol="SSH" ;;
-            21)      portprotocol="FTP" ;;
-            139|445) portprotocol="SMB/CIFS" ;;
-            443)     portprotocol="HTTPS" ;;
-            548)     portprotocol="AFP" ;;
-            873)     portprotocol="RSYNC" ;;
-            3306)    portprotocol="MYSQL" ;;
-            3689)    portprotocol="DAAP" ;;
-            6991)    portprotocol="BITTORRENT" ;;
-            9091)    portprotocol="BITTORRENT_WEBIF" ;;
-            32400)   portprotocol="PLEXMEDIASERVER" ;;
-            49152)   portprotocol="UPNP" ;;
-            51413)   portprotocol="BITTORRENT" ;;
-            *)       portprotocol="unknown" ;;
-        esac
+        [ "${NSOCKETSCLIENTSCHECK}" == "true" ] && {
+            local online; online="$(LC_ALL=C
+                fping --quiet --retry=1 --alive <<< "${conips}")"
+            conips="$(awk -v regex="^${online//$'\n'/|}$" \
+                          '$0 ~ regex {print $0 "/online"}
+                           $0 !~ regex {print $0 "/offline"}' <<< "${conips}")"
+            lines="$(awk -v regex="${reg_s}(${online//$'\n'/|})${reg_e}" \
+                         '$5 ~ regex' <<< "${lines}")"; }
 
-        _log "INFO: Found ${no_lines} active connection(s) on port ${nsocket} (${portprotocol}) from: ${conips//$'\n'/, }"
+        local no_lines=0;
+        [ -n "${lines}" ] && no_lines="$(wc -l <<< "${lines}")"
+        ((active+="${no_lines}"))
+
+        _log "INFO: Found ${no_lines} active connection(s) on port ${nsocket} (${service}) from: ${conips//$'\n'/, }"
     done
 
     _log "INFO: Found ${active} active socket(s) from port(s): ${NSOCKETNUMBERS}"
@@ -530,20 +527,28 @@ _check_net_status() {
 
 ###############################################################################
 #
-#   Name       : _check_docker_status
-#   Parameters : None
-#   Globals    : $NSOCKETNUMBERS : Socket number to check for activity.
+#   Name       : _check_container_status
+#   Parameters : $1 : Name of the container engine to use with a compatible
+#                     Docker API/Interface.
+#   Globals    : $NSOCKETNUMBERS      : Socket number to check for activity.
+#              : NSOCKETSCLIENTSCHECK : If true check, if the client connected
+#                                       to the socket is online.
 #   Return     : 0         : If no active socket has been found, shutdown.
 #              : 1 or more : If an active socket is found, no shutdown.
 #
-_check_docker_status() {
-    command -v docker &>/dev/null || return 0
+_check_container_status() {
+    local -r engine="${1}"
+    command -v "${engine}" &>/dev/null || return 0
+    _log "INFO: Check status of container engine: ${engine}"
     local active=0
     local nsocketnums; mapfile -t nsocketnums <<< "${NSOCKETNUMBERS//,/$'\n'}"
-    for container in $(docker container ls --format "{{ .Names }}"); do
-        local info; read -ra info <<< "$(LC_ALL=C
-            docker container inspect --format \
-            '{{.State.Pid}} {{.NetworkSettings.IPAddress}}
+    local -r reg_s="^[[]?(::(ffff|FFFF):)?"
+    local -r reg_e="[]]?([%][^ /]+)?:[0-9]+$"
+    for container in $("${engine}" container ls --format "{{ .Names }}"); do
+        local info; read -ra info <<< "$(# shellcheck disable=SC2016
+            LC_ALL=C "${engine}" container inspect --format \
+            '{{.State.Pid}}
+             {{- ""}} {{range.NetworkSettings.Networks}}{{.IPAddress}},{{end}}
              {{- ""}} {{range $key, $value := .NetworkSettings.Ports}}
                 {{- ""}}{{if $value}}
                     {{- ""}} {{(index $value 0).HostPort}}:
@@ -560,30 +565,43 @@ _check_docker_status() {
                 local c_map; mapfile -t c_map < <(
                     seq "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}")
                 for index in "${!h_map[@]}"; do
-                    [[ " ${nsocketnums[*]} " =~ \ ${h_map["${index}"]}\  ]] &&
+                    [[ " ${nsocketnums[*]} " =~ \
+                            [[:blank:]]${h_map["${index}"]}[[:blank:]] ]] &&
                         p_map["${h_map["${index}"]}"]="${c_map["${index}"]}"
                 done
                 continue; }
-            [[ " ${nsocketnums[*]} " =~ \ ${ports%:*}\  ]] &&
+            [[ " ${nsocketnums[*]} " =~ [[:blank:]]${ports%:*}[[:blank:]] ]] &&
                 p_map["${ports%:*}"]="${ports#*:}"
         done
         [ "${#p_map[@]}" -eq 0 ] && continue
+        local ips_filter="${info[1]::-1}"
+        ips_filter="${ips_filter//,/] or src [}"
         for target in "${!p_map[@]}"; do
             local lines; lines="$(LC_ALL=C
-                nsenter -t "${info[0]}" -n ss -n |
-                awk -v \
-                    regex="^[[]?(::(ffff|FFFF):)?${info[1]}[]]?:${p_map[${target}]}$" \
-                    '$2 ~ /^ESTAB$/ && $5 ~ regex' ||
-                true)"
+                nsenter --target "${info[0]}" --net \
+                    ss state established --no-header --numeric \
+                        "sport ${p_map[${target}]} and \
+                            ( src [${ips_filter}] )" || true )"
+            [ -z "${lines}" ] && continue
             local con_ips; con_ips="$(
-                awk '{sub(/^[[]?(::(ffff|FFFF):)?/,"",$6);
-                      sub(/[]]?:[0-9]+$/,"",$6)}
-                      $6~/:/{print "z"$6} $6!~/:/{print $6}' <<< "${lines}" |
-                sort -Vu |  awk -Fz '/:/{print $2}!/:/{print}')"
-            [ -n "${lines}" ] && {
-                local no_lines; no_lines="$(wc -l <<< "${lines}")"
-                ((active+="${no_lines}"))
-                _log "INFO: Found ${no_lines} active connection(s) on port ${target} (${container}) from: ${con_ips//$'\n'/, }"; }
+                awk -v reg_s="${reg_s}" -v reg_e="${reg_e}" \
+                    '{sub(reg_s,"",$5); sub(reg_e,"",$5)}
+                      $5~/:/{print "z"$5} $5!~/:/{print $5}' <<< "${lines}" |
+                sort -Vu | awk -Fz '/:/{print $2}!/:/{print}')"
+            [ "${NSOCKETSCLIENTSCHECK}" == "true" ] && {
+                local online; online="$(LC_ALL=C
+                    nsenter --target "${info[0]}" --net \
+                        fping --quiet --retry=1 --alive <<< "${con_ips}")"
+                con_ips="$(awk -v regex="^${online//$'\n'/|}$" \
+                               '$0 ~ regex {print $0 "/online"}
+                                $0 !~ regex {print $0 "/offline"}' <<< \
+                           "${con_ips}")"
+                lines="$(awk -v regex="${reg_s}(${online//$'\n'/|})${reg_e}" \
+                             '$5 ~ regex' <<< "${lines}")"; }
+            local no_lines=0;
+            [ -n "${lines}" ] && no_lines="$(wc -l <<< "${lines}")"
+            ((active+="${no_lines}"))
+            _log "INFO: Found ${no_lines} active connection(s) on port ${target} (${container}) from: ${con_ips//$'\n'/, }"
         done
     done
     _log "INFO: Found ${active} active socket(s) from port(s): ${NSOCKETNUMBERS}"
@@ -606,11 +624,10 @@ _check_users_status() {
         _log "INFO: There are no users connected -> next check"
         return 0; }
 
-    [ "${DEBUG}" == "true" ] && {
-        _log "DEBUG: Connected users:"
-        local user; while read -r user; do
-            _log "DEBUG: ${user}"
-        done <<< "${users_connected}"; }
+    _log "DEBUG: Connected users:"
+    local user; while read -r user; do
+        _log "DEBUG: ${user}"
+    done <<< "${users_connected}"
 
     local connecton; while read -r connecton; do
         _log "$(awk '{sub(/^-$/,"localhost",$3);
@@ -643,7 +660,7 @@ _check_smb_status() {
     local clients="false"
     _log "INFO: SMB client(s) with locks:"
     local pid user host prot; while read -r pid user host prot; do
-        [[ " ${smb_lock_pids[*]} " =~ \ ${pid}\  ]] && {
+        [[ " ${smb_lock_pids[*]} " =~ [[:blank:]]${pid}[[:blank:]] ]] && {
             [ "${CHECK_SAMBA_CLIENTS}" == "true" ] && {
                 local state="/offline"
                 ! LC_ALL=C fping --quiet --retry=1 "${host}" || {
@@ -684,8 +701,7 @@ _check_ul_dl_rate() {
     local -r tx_kb="$(awk '{printf("%.0f",($0/1024))}' \
                 "/sys/class/net/${net_iface}/statistics/tx_bytes")"
 
-    [ "${DEBUG}" == "true" ] &&
-        _log "DEBUG: Actual: TX kB: ${tx_kb}, RX kB: ${rx_kb}"
+    _log "DEBUG: Actual: TX kB: ${tx_kb}, RX kB: ${rx_kb}"
 
     [[ "${last_checked_sec}" -eq 0 ||
           -z "${P_UL_DL_RATE["${net_iface}_epoch_sec"]:-}" ||
@@ -696,11 +712,10 @@ _check_ul_dl_rate() {
         P_UL_DL_RATE["${net_iface}_rx"]="${rx_kb}"
         P_UL_DL_RATE["${net_iface}_tx"]="${tx_kb}"
 
-        [ "${DEBUG}" == "true" ] && _log "DEBUG: Store TX, RX and epoch values"
+        _log "DEBUG: Store TX, RX and epoch values"
         return 0; }
 
-    [ "${DEBUG}" == "true" ] &&
-        _log "DEBUG: Previous TX kB: ${P_UL_DL_RATE["${net_iface}_tx"]}, RX kB: ${P_UL_DL_RATE["${net_iface}_rx"]}"
+    _log "DEBUG: Previous TX kB: ${P_UL_DL_RATE["${net_iface}_tx"]}, RX kB: ${P_UL_DL_RATE["${net_iface}_rx"]}"
 
     # Calculate threshold limit (defined kB/s multiplied with second since
     # last checked) to get the total value of kB over the 'last checked
@@ -721,15 +736,14 @@ _check_ul_dl_rate() {
     local last_ul_rate; last_ul_rate=$(
         awk '{printf("%.1f",($1/$2))}' <<< "${diff_tx} ${last_checked_sec}")
 
-    [ "${DEBUG}" == "true" ] && {
-        _log "DEBUG: last_checked_sec ${last_checked_sec}"
-        _log "DEBUG: ul_dl_increase: ${ul_dl_increase}"
-        _log "DEBUG: t_rx: ${t_rx}"
-        _log "DEBUG: diff_rx: ${diff_rx}"
-        _log "DEBUG: t_tx: ${t_tx}"
-        _log "DEBUG: diff_tx: ${diff_tx}"
-        _log "DEBUG: Check: rx_kb:${rx_kb} <= t_rx:${t_rx}"
-        _log "DEBUG: Check: tx_kb:${tx_kb} <= t_tx:${t_tx}"; }
+    _log "DEBUG: last_checked_sec ${last_checked_sec}"
+    _log "DEBUG: ul_dl_increase: ${ul_dl_increase}"
+    _log "DEBUG: t_rx: ${t_rx}"
+    _log "DEBUG: diff_rx: ${diff_rx}"
+    _log "DEBUG: t_tx: ${t_tx}"
+    _log "DEBUG: diff_tx: ${diff_tx}"
+    _log "DEBUG: Check: rx_kb:${rx_kb} <= t_rx:${t_rx}"
+    _log "DEBUG: Check: tx_kb:${tx_kb} <= t_tx:${t_tx}"
 
     # Store current values.
     P_UL_DL_RATE["${net_iface}_epoch_sec"]="${epoch_sec}"
@@ -804,11 +818,11 @@ _check_clock() {
     [[ "${epoch_sec}" -lt "${epoch_start}" ||
           "${epoch_sec}" -ge "${epoch_end}" ||
           "${seconds_to_sleep}" -le 0 ]] && {
-        [ "${DEBUG}" == "true" ] && _log "${msg}allow shutdown"
-       _log "INFO: System is in shutdown range -> next check"
-       return 0; }
+        _log "${msg}allow shutdown"
+        _log "INFO: System is in shutdown range -> next check"
+        return 0; }
 
-    [ "${DEBUG}" == "true" ] && _log "${msg}stay up"
+    _log "${msg}stay up"
     _log "INFO: System is in stay up range. Sleeping until: $(
             date --date @$((epoch_sec + seconds_to_sleep))
                 ) -> ${seconds_to_sleep}s"
@@ -851,16 +865,16 @@ _set_wakealarm() {
         echo 0 > "/sys/class/rtc/${RTC}/wakealarm"
         echo "${alarm_time}" > "/sys/class/rtc/${RTC}/wakealarm"
     else
-        _log "INFO: Wakealarm will not be set in FAKE-Mode" force
+        _log "WARNING: Wakealarm will not be set in FAKE-Mode" force
     fi
 
     _log "INFO: Wake alarm set: ${wakealarm}, RTC time: ${alarm_time} -> $(
             date --utc --date @"${alarm_time}")"
-    [ "${DEBUG}" == "true" ] && {
-        _log "DEBUG: Output from: /proc/driver/rtc"
-        local line; while read -r line; do
-            _log "DEBUG: ${line}"
-        done < "/proc/driver/rtc"; }
+
+    _log "DEBUG: Output from: /proc/driver/rtc"
+    local line; while read -r line; do
+        _log "DEBUG: ${line}"
+    done < "/proc/driver/rtc"
 
     return 0
 }
@@ -879,26 +893,23 @@ _set_wakealarm() {
 _check_hddio() {
     local rvalue=0
 
-    [ "${DEBUG}" == "true" ] && _log "DEBUG: HDDIO_RATE: ${HDDIO_RATE} kB/s"
+    _log "DEBUG: HDDIO_RATE: ${HDDIO_RATE} kB/s"
 
     local -r epoch_sec="${EPOCHSECONDS}"
     local -r last_checked_sec=$((
         epoch_sec - ${P_HDDIO_DEVS["epoch_sec"]:-${epoch_sec}}))
 
     local hdd hdd_in hdd_out; while read -r hdd hdd_in hdd_out; do
-        [ "${DEBUG}" == "true" ] &&
-            _log "DEBUG: ========== Device: ${hdd} =========="
+        _log "DEBUG: ========== Device: ${hdd} =========="
 
         ! mount -l | grep -q "${hdd}" && {
-            [ "${DEBUG}" == "true" ] &&
-                _log "DEBUG: Skipping as no mount point"
+            _log "DEBUG: Skipping as no mount point"
             continue; }
 
-        [ "${DEBUG}" == "true" ] && {
-            local line; while read -r line; do
-                _log "DEBUG: ${line}"
-            done < <(blkid -s LABEL -s UUID | grep "${hdd}")
-            _log "DEBUG: Actual: kB_read: ${hdd_in}, kB_wrtn: ${hdd_out}"; }
+        local line; while read -r line; do
+            _log "DEBUG: ${line}"
+        done < <(blkid -s LABEL -s UUID | grep "${hdd}")
+        _log "DEBUG: Actual: Read kB: ${hdd_in}, Write kB: ${hdd_out}"
 
         [[ "${rvalue}" -eq 1 || "${last_checked_sec}" -eq 0 ||
               -z "${P_HDDIO_DEVS["epoch_sec"]:-}" ||
@@ -908,12 +919,10 @@ _check_hddio() {
             P_HDDIO_DEVS["${hdd}_r"]="${hdd_in}"
             P_HDDIO_DEVS["${hdd}_w"]="${hdd_out}"
 
-            [ "${DEBUG}" == "true" ] &&
-                _log "DEBUG: Store new read/write value for device"
+            _log "DEBUG: Store new read/write value for device"
             continue; }
 
-        [ "${DEBUG}" == "true" ] &&
-            _log "DEBUG: Previous: kB_read: ${P_HDDIO_DEVS["${hdd}_r"]}, kB_wrtn: ${P_HDDIO_DEVS["${hdd}_w"]}"
+        _log "DEBUG: Previous: Read kB: ${P_HDDIO_DEVS["${hdd}_r"]}, Write kB: ${P_HDDIO_DEVS["${hdd}_w"]}"
 
         # Calculate threshold limit (defined kB/s multiplied with second since
         # last checked) to get the total value of kB over the 'last checked
@@ -936,23 +945,22 @@ _check_hddio() {
             awk '{printf("%.1f",($1/$2))}' <<< \
                  "${diff_hddio_write} ${last_checked_sec}")"
 
-        [ "${DEBUG}" == "true" ] && {
-            _log "DEBUG: last_checked_sec: ${last_checked_sec}"
-            _log "DEBUG: hddio_increase: ${hddio_increase}"
-            _log "DEBUG: t_hddio_read: ${t_hddio_read}"
-            _log "DEBUG: diff_hddio_read: ${diff_hddio_read}"
-            _log "DEBUG: t_hddio_write: ${t_hddio_write}"
-            _log "DEBUG: diff_hddio_write: ${diff_hddio_write}"
-            _log "DEBUG: Check: hdd_in: ${hdd_in} <= t_hddio_read: ${t_hddio_read}"
-            _log "DEBUG: Check: hdd_out: ${hdd_out} <= t_hddio_write: ${t_hddio_write}"; }
+        _log "DEBUG: last_checked_sec: ${last_checked_sec}"
+        _log "DEBUG: hddio_increase: ${hddio_increase}"
+        _log "DEBUG: t_hddio_read: ${t_hddio_read}"
+        _log "DEBUG: diff_hddio_read: ${diff_hddio_read}"
+        _log "DEBUG: t_hddio_write: ${t_hddio_write}"
+        _log "DEBUG: diff_hddio_write: ${diff_hddio_write}"
+        _log "DEBUG: Check: hdd_in: ${hdd_in} <= t_hddio_read: ${t_hddio_read}"
+        _log "DEBUG: Check: hdd_out: ${hdd_out} <= t_hddio_write: ${t_hddio_write}"
 
         # Store current values.
         P_HDDIO_DEVS["${hdd}_r"]="${hdd_in}"
         P_HDDIO_DEVS["${hdd}_w"]="${hdd_out}"
 
         local msg="INFO: Device: ${hdd} (last ${last_checked_sec}s) "
-              msg+="kB_read/s: ${last_hddio_read_rate}, "
-              msg+="kB_wrtn/s: ${last_hddio_write_rate}"
+              msg+="Read: ${last_hddio_read_rate} kB/s, "
+              msg+="Write: ${last_hddio_write_rate} kB/s"
 
         if [[ "${hdd_in}" -gt "${t_hddio_read}" ||
               "${hdd_out}" -gt "${t_hddio_write}" ]]; then
@@ -962,8 +970,9 @@ _check_hddio() {
             _log "${msg} under: ${HDDIO_RATE} kB/s -> next check"
         fi
 
-    done < <(LC_ALL=C iostat -kdyNz |
-             awk 'NR>3 && !/^$/{print $1 " " $5 " " $6}')
+    done < <(LC_ALL=C iostat -kdyNz -o JSON |
+             jq -r '.sysstat.hosts[].statistics[].disk[] |
+                    "\(.disk_device) \(.kB_read) \(.kB_wrtn)"');
 
     P_HDDIO_DEVS["epoch_sec"]="${epoch_sec}"
     _log "INFO: All checks complete"
@@ -979,7 +988,7 @@ _check_hddio() {
 #   Return     : 1 : If any HDD is running smart tests then no shutdown.
 #              : 0 : If no HDD is running smart tests.
 #
-# This checks if a device is running smart tests, if S.M.A.R.T is supported
+# This checks if a device is running smart tests, if S.M.A.R.T. is supported
 # directly by the device and its controller. For example this will not work on
 # a HPE smart array. If smart tests are running on a supported device then
 # no shutdown. If no smart tests or device/controller is not supported go to
@@ -987,17 +996,15 @@ _check_hddio() {
 #
 _check_smart() {
     local hdd; while read -r hdd; do
-        [ "${DEBUG}" == "true" ] &&
-            _log "DEBUG: Checking device for running smart tests: ${hdd}"
+        _log "DEBUG: Checking device for running smart tests: ${hdd}"
 
         local smart_output; smart_output="$(LC_ALL=C
             smartctl --all --nocheck=standby "${hdd}" || true)"
 
-        [ "${DEBUG}" == "true" ] && {
-            _log "DEBUG: Smartctl output: ${hdd}"
-            local line; while read -r line; do
-               _log "DEBUG: ${line}"
-            done <<< "${smart_output}"; }
+        _log "DEBUG: Smartctl output: ${hdd}"
+        local line; while read -r line; do
+           _log "DEBUG: ${line}"
+        done <<< "${smart_output}"
 
         grep -q "in[ _]progress" <<< "${smart_output}" && {
             _log "INFO: Device ${hdd} is running SMART tests -> no shutdown"
@@ -1012,16 +1019,17 @@ _check_smart() {
 
 ###############################################################################
 #
-#   Name       : _check_config
+#   Name       : _validate_config
 #   Parameters : None
-#   Globals    : $CONFIG    : The autoshutdown configuration.
-#              : $*         : All options as defined in $CONFIG for validation.
-#              : $DEFAULT_* : All options as defined in $DEFAULT_CONFIG for
-#                             default value reset in case of error.
+#   Globals    : DEFAULT_CONFIG : Location of the $DEFAULT_CONFIG.
+#              : $*             : All options as defined in $CONFIG for
+#                                 validation.
+#              : $DEFAULT_*     : All options as defined in $DEFAULT_CONFIG for
+#                                 default value reset in case of error.
 #              : $R_*       : Global regular expression's for validation.
 #   Return     : 0 on success.
 #
-_check_config() {
+_validate_config() {
     __check_value() {
         local -r var="${1}"
         local -r regex="${2}"
@@ -1040,20 +1048,11 @@ _check_config() {
             declare -g "${var}"="${!default_var}"; }
     }
 
-    _log "INFO: ------------------------------------------------------"
-    _log "INFO: Checking config: ${CONFIG}"
+    __check_value "FAKE" "^(true|false)$" "set to: 'true' or 'false'"
+    [ "${FAKE}" == "true" ] && VERBOSE="true"
 
-    [[ "${FAKE}" == "true" || "${FAKE}" == "false" ]] || {
-        _log "WARNING: FAKE not set properly: ${FAKE}"
-        _log "WARNING: FAKE must be set to: 'true' or 'false'"
-        _log "WARNING: FAKE set to true -> FAKE-mode, with VERBOSE -> true"
-        FAKE="true"; VERBOSE="true"; DEBUG="true"; }
-
-    [[ "${VERBOSE}" == "true" || "${VERBOSE}" == "false" ]] || {
-        _log "WARNING: VERBOSE not set properly: ${VERBOSE}"
-        _log "WARNING: VERBOSE must be set to: 'true' or 'false'"
-        _log "WARNING: VERBOSE set to default: ${DEFAULT_VERBOSE}"
-        VERBOSE="${DEFAULT_VERBOSE}"; DEBUG="${DEFAULT_VERBOSE}"; }
+    # VERBOSE (true or false)
+    __check_value "VERBOSE" "^(true|false)$" "set to: 'true' or 'false'"
 
     # SYSLOG (true or false).
     __check_value "SYSLOG" "^(true|false)$" "set to: 'true' or 'false'"
@@ -1167,12 +1166,19 @@ _check_config() {
 
     if [ "${CHECKSOCKETS}" == "true" ]; then
         __check_value "NSOCKETNUMBERS" "^([0-9]{2,5})(,[0-9]{2,5})*$" \
-            "at least 2 digit in the format: [nsocket1,nsocket2,...,nsocketN]"
+            "at least 2 to 5 digits in the format: [nsocket1,nsocket2,...,nsocketN]"
+
+        __check_value "NSOCKETPORTMAP" "^((([0-9]{2,5}:[^,]+)(,[0-9]{2,5}:[^,]+)*)|)$" \
+            "a port of 2 to 5 digits with an associated service name in the format: [<port1>:<service1>,<port2>:<service2>,...,<portN>:<serviceN>]" \
+            "false"
 
         __check_value "NSOCKETIGNORESELF" "^(true|false)$" \
             "set to: 'true' or 'false'"
+
+        __check_value "NSOCKETSCLIENTSCHECK" "^(true|false)$" \
+            "set to: 'true' or 'false'"
     else
-        _log "WARNING: CHECKSOCKETS set false not validating: NSOCKETNUMBERS and NSOCKETIGNORESELF"
+        _log "WARNING: CHECKSOCKETS set false not validating: NSOCKETNUMBERS, NSOCKETPORTMAP, NSOCKETIGNORESELF and NSOCKETSCLIENTSCHECK"
     fi
 
     # PINGLIST or RANGE set-up.
@@ -1247,11 +1253,11 @@ _check_config() {
         SHUTDOWNCOMMAND="${DEFAULT_SHUTDOWNCOMMAND}"
     # Check, if shutdown hybrid-sleep, suspend and hibernate are supported.
     elif ( [[ "${SHUTDOWNCOMMAND}" =~ \
-                    ^systemctl\ +(hybrid-sleep|suspend|hibernate)$ ]] &&
+                    ^systemctl[[:blank:]]+(hybrid-sleep|suspend|hibernate)$ ]] &&
               ! pm-is-supported \
                     "${pm_map["${BASH_REMATCH[1]}"]%:*}" 2>/dev/null ) ||
          ( [[  "${SHUTDOWNCOMMAND}" =~ \
-                    ^systemctl\ +suspend-then-hibernate$ ]] &&
+                    ^systemctl[[:blank:]]+suspend-then-hibernate$ ]] &&
                ( ! pm-is-supported --suspend 2>/dev/null ||
                  ! pm-is-supported --hibernate 2>/dev/null ) ); then
         _log "WARNING: SHUTDOWNCOMMAND not supported: ${SHUTDOWNCOMMAND}"
@@ -1261,38 +1267,42 @@ _check_config() {
         _log "INFO: SHUTDOWNCOMMAND is set to: ${SHUTDOWNCOMMAND}"
     fi
 
+    # Set all vars defined in DEFAULT_CONFIG to readonly.
+    . <(awk -F= '$0!~/^[ ]*#/ && $0!~/^$/ {print "readonly "$1}' \
+            "${DEFAULT_CONFIG}")
+
     return 0
 }
 
 
 ###############################################################################
 #
-#   Name       : _check_networkconfig
+#   Name       : _get_network_details
 #   Parameters : None
-#   Globals    : $FORCE_NIC  : Force network interface lookup using a space
-#                              delimited list of network interface or partial
-#                              interface names to be checked.
-#              : $NICS       : Array for storing active network interface
-#                              names.
-#              : $NIC_2_IPV4 : Associative array for storing network interface
-#                              to IPv4 address mappings.
-#              : $NIC_2_IPV6 : Associative array for storing network interface
-#                              to IPv6 address mappings.
-#              : $R_IPV4     : IPv4 address regular expression.
-#              : $R_IPV6     : IPv6 address regular expression.
+#   Globals    : $FORCE_NIC       : Force network interface lookup using a
+#                                   space delimited list of network interface
+#                                   or partial interface names to be checked.
+#              : $NICS            : Array for storing active network interface
+#                                   names.
+#              : $NET_IFACE_RETRY : How many times to retry the interface to
+#                                   check if it is online.
+#              : $NET_IFACE_SLEEP : The amount of time to sleep between
+#                                   re-checking if the interface is online.
+#              : $NIC_2_IPV4      : Associative array for storing network
+#                                   interface to IPv4 address mappings.
+#              : $NIC_2_IPV6      : Associative array for storing network
+#                                 : interface to IPv6 address mappings.
+#              : $R_IPV4          : IPv4 address regular expression.
+#              : $R_IPV6          : IPv6 address regular expression.
 #   Return     : 0 on success.
 #
-_check_networkconfig() {
-    _log "INFO: ------------------------------------------------------"
-    _log "INFO: Find available network interfaces and their IP addresses"
-
+_get_network_details() {
     local net_iface; while read -r net_iface; do
         for (( n=0; n < NET_IFACE_RETRY; n++ )); do
             local msg=""
             local state; state="$(< "/sys/class/net/${net_iface}/operstate")"
-            [ "${DEBUG}" == "true" ] && {
-                _log "DEBUG: Network interfaces: ${net_iface}"
-                _log "DEBUG: Network interfacesa status: ${state}"; }
+            _log "DEBUG: Network interfaces: ${net_iface}"
+            _log "DEBUG: Network interfaces status: ${state}"
             for ip_type in ipv4 ipv6; do
                 local valid="false" regex="R_${ip_type^^}"
                 local ip; ip="$(LC_ALL=C
@@ -1305,9 +1315,8 @@ _check_networkconfig() {
                         # shellcheck disable=SC2034
                         ip_ref="${ip}"; }
                     valid="true"; }
-                [ "${DEBUG}" == "true" ] && {
-                    _log "DEBUG: Network interfaces IPv${ip_type: -1} address: ${ip:-N/A}"
-                    _log "DEBUG: Network interfaces IPv${ip_type: -1} address valid: ${valid}"; }
+                _log "DEBUG: Network interfaces IPv${ip_type: -1} address: ${ip:-N/A}"
+                _log "DEBUG: Network interfaces IPv${ip_type: -1} address valid: ${valid}"
             done
 
             [[ -n "${NIC_2_IPV4["${net_iface}"]:-}" ||
@@ -1347,7 +1356,7 @@ _check_networkconfig() {
 _check_system_active() {
     __run_check() {
         [ "${1}" == "true" ] || return 0
-        [ "${DEBUG}" == "true" ] && _log "DEBUG: Calling: ${2}()"
+        _log "DEBUG: Calling: ${2}()"
         "${2}" "${@:3}"
     }
 
@@ -1369,7 +1378,9 @@ _check_system_active() {
     # PRIO 2: Do a check for active network sockets.
     __run_check "${CHECKSOCKETS}" _check_net_status "${ips}" || return 1
     # PRIO 2: Do a check docker sockets for active network sockets.
-    __run_check "${CHECKSOCKETS}" _check_docker_status || return 1
+    __run_check "${CHECKSOCKETS}" _check_container_status "docker" || return 1
+    # PRIO 2: Do a check podman sockets for active network sockets.
+    __run_check "${CHECKSOCKETS}" _check_container_status "podman" || return 1
     # PRIO 2: Check for connected users on the CLI.
     __run_check "${CHECK_CLI}" _check_users_status || return 1
     # PRIO 2: Check Samba for connected clients.
@@ -1381,7 +1392,7 @@ _check_system_active() {
             return 1
     done
 
-    # PRIO 4: Do a hdd io check.
+    # PRIO 4: Do a hdd IO check.
     __run_check "${HDDIOCHECK}" _check_hddio || return 1
     # PRIO 4: Do a hdd check to see if S.M.A.R.T. tests are running.
     __run_check "${SMARTCHECK}" _check_smart || return 1
@@ -1407,44 +1418,43 @@ _log "INFO: debain-autoshutdown version: $(
     dpkg-query -f='${Version}' --show debian-autoshutdown)" force
 _log "INFO: Script md5sum: $(md5sum "${0}" | awk '{print $1}')" force
 
-[ ! -f "${DEFAULT_CONFIG}" ] && {
-    _log "ERR: Default file not found! Check ${DEFAULT_CONFIG} exits ..." force
+for config_file in "${DEFAULT_CONFIG}" "${CONFIG}"; do
+    [ ! -f "${config_file}" ] && {
+    _log "ERR: File not found! Check ${config_file} exits ..." force
     exit 139; }
+done
+
 . "${DEFAULT_CONFIG}"
-. <(awk '$0 !~ /^[ ]*#/ && $0 !~ /^$/{print "DEFAULT_"$0}' "${DEFAULT_CONFIG}")
-_log "INFO: ${DEFAULT_CONFIG} loaded" force
-
-[ ! -f "${CONFIG}" ] && {
-    _log "ERR: Config file not found! Check ${CONFIG} exits ..." force
-    exit 139; }
+. <(awk '$0 !~ /^[ ]*#/ && $0 !~ /^$/{print "readonly DEFAULT_"$0}' \
+        "${DEFAULT_CONFIG}")
 . "${CONFIG}"
+
+_log "INFO: ${DEFAULT_CONFIG} loaded" force
 _log "INFO: ${CONFIG} loaded" force
-
-# Set-up logging and modes.
-[ "${FAKE:-}" == "true" ] && VERBOSE="true"
-DEBUG="${VERBOSE:-"${DEFAULT_VERBOSE}"}"
-
-_check_config
+_log "INFO: ---------------- Validate config ---------------------"
+_log "INFO: Checking config: ${CONFIG}"
+_validate_config
 
 # Enable / disable check here.
 [ "${ENABLE}" == "false" ] && {
     _log "INFO: Script disabled, exiting here ..."
     exit 0; }
 
-[ "${DEBUG}" == "true" ] && {
-    _log "DEBUG: -----------------------------------------------------"
-    while read -r var; do
-        value="N/A"
-        [[ "${var}" == "LOADPROCNAMES" || "${var}" == "TEMPPROCNAMES" ]] &&
-            value="disabled"
-        _log "DEBUG: ${var}: ${!var:-${value}}"
-    done < <(awk -F= '$0!~/^[ ]*#/ && $0!~/^$/ {print $1}' "${DEFAULT_CONFIG}")
-    _log "DEBUG: Available plugins found in: ${PLUGIN_DIR}"
-    for _plugin in "${PLUGIN_DIR}"/*; do
-        [ ! -f "${_plugin}" ] || _log "DEBUG: Plugin: ${_plugin}"
-    done; }
+_log "DEBUG: ------------ Current config values ------------------"
+while read -r var; do
+    value="N/A"
+    [[ "${var}" == "LOADPROCNAMES" || "${var}" == "TEMPPROCNAMES" ]] &&
+        value="disabled"
+    _log "DEBUG: ${var}: ${!var:-${value}}"
+done < <(awk -F= '$0!~/^[ ]*#/ && $0!~/^$/ {print $1}' "${DEFAULT_CONFIG}")
+_log "DEBUG: Available plugins found in: ${PLUGIN_DIR}"
+for _plugin in "${PLUGIN_DIR}"/*; do
+    [ ! -f "${_plugin}" ] || _log "DEBUG: Plugin: ${_plugin}"
+done
 
-_check_networkconfig
+_log "INFO: ---------------- Network details ---------------------"
+_log "INFO: Find active network interfaces and their IP addresses"
+_get_network_details
 
 _log "INFO: --------------- Initialise states --------------------"
 
@@ -1475,18 +1485,22 @@ for net_iface in "${NICS[@]}"; do
 done
 
 _log "INFO: ${CYCLES} cycles until shutdown is issued"
+fcnt="${CYCLES}"
 while : ; do
     _log "INFO: ------------------------------------------------------"
     _log "INFO: New supervision cycle started, checking system activity"
-    _check_system_active || FCNT=$((CYCLES + 1))
-    FCNT=$((${FCNT:-${CYCLES}} - 1))
-    [ "${FCNT}" -eq 0 ] && break
-    [ "${FCNT}" -ne "${CYCLES}" ] &&
-        _log "INFO: All active checks passed, ${FCNT} cycles until shutdown ..."
-    # Wait before checking again.
+    fcnt=$((fcnt - 1))
+    msg="All active checks passed"
+    _check_system_active || { fcnt="${CYCLES}"; msg="Active check failed"; }
+    [ "${fcnt}" -eq 0 ] && break
+    _log "INFO: ${msg}, ${fcnt} cycles until shutdown ..."
     _log "INFO: Sleep for ${SLEEP}s"
     sleep "${SLEEP}"
 done
+[ "${fcnt}" -ne 0 ] && {
+    _log "ERR: Script error detected in supervision cycle"
+    exit 143; }
+
 _log "INFO: All active checks passed, Shutting down system ..."
 [ "${WAKEALARM_SET}" == "true" ] && _set_wakealarm
 trap - EXIT
